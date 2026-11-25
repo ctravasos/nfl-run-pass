@@ -1,5 +1,5 @@
 // NFL Run/Pass Tendencies — all aggregation runs here, from one compact JSON file per team.
-// Logic mirrors the original Shiny app (analysis/nfl_run_pass_shiny.R).
+// Logic mirrors the original R analysis (analysis/nfl_run_pass_decisions.rmd).
 (() => {
   const META = JSON.parse(document.getElementById("meta").textContent);
   const CUR = META.current;

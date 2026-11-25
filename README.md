@@ -52,7 +52,7 @@ charts, deployed with GitHub Actions to GitHub Pages twice a day.
 | [`static/js/app.js`](static/js/app.js) | bins, filters and charts in the browser |
 | [`run.py`](run.py) | CLI: `update`, `build`, `serve` |
 | [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) | scheduled rebuild and deploy |
-| [`analysis/`](analysis/) | the original R Markdown analysis and the Shiny app this site replaces |
+| [`analysis/`](analysis/) | the original R Markdown analysis |
 
 ## Running locally
 
@@ -65,6 +65,5 @@ python run.py serve      # preview at http://localhost:8000
 
 ## Background
 
-This started as an R analysis ([`analysis/nfl_run_pass_decisions.rmd`](analysis/nfl_run_pass_decisions.rmd)) and a
-Shiny app ([`analysis/nfl_run_pass_shiny.R`](analysis/nfl_run_pass_shiny.R)). The Python pipeline is a direct port of
-the R data step, checked against it: identical play counts and flags for 2024 and 2025.
+This started as an R analysis ([`analysis/nfl_run_pass_decisions.rmd`](analysis/nfl_run_pass_decisions.rmd)). The
+Python pipeline is a direct port of its data step, checked against it: identical play counts and flags for 2024 and 2025.
