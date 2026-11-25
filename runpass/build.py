@@ -157,7 +157,7 @@ def build() -> None:
         "teams": teams,
     }
     now = datetime.now(timezone.utc)
-    ctx = {"base": base, "updated": f"{now:%b} {now.day}, {now:%Y}", "meta": meta,
+    ctx = {"base": base, "updated": f"{now:%b} {now.day}, {now:%Y}", "meta": meta, "version": f"{now:%Y%m%d%H%M}",
            "season_range": f"{seasons[0]}–{seasons[-1]}", "current": seasons[-1],
            "n_plays": f"{len(plays):,}"}
 
