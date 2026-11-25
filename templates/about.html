@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}How it works — NFL Run/Pass Tendencies{% endblock %}
+{% block content %}
+<div class="prose">
+  <h1>How it works</h1>
+
+  <h2>What it shows</h2>
+  <p>Pick an offense and a defense. Every chart puts two bars side by side: how often the offense
+    runs or passes in a situation, and how often its opponents run or pass against the defense in
+    the same situation. Each label reads <b>{{ current }}% ({{ season_range }} avg%)</b>, so you can
+    see whether this season matches the longer trend. The five-season average includes {{ current }}.</p>
+
+  <h2>Which plays count</h2>
+  <p>Regular-season and playoff plays that nflverse classifies as a run or a pass, {{ n_plays }} in all.
+    Sacks and scrambles count as passes. Kneel-downs, spikes, special teams and plays wiped out
+    by a penalty are left out.</p>
+
+  <h2>Situations</h2>
+  <ul>
+    <li><b>Distance</b>: Short is 1–3 yards to go, Medium 4–7, Standard 8–10, Long more than 10.</li>
+    <li><b>Field position</b>: Own Territory is inside your own 20, Own Half is your 21 to your 49,
+      Opponent Half is midfield to their 21, Red Zone is their 20 and in.</li>
+    <li><b>Score differential</b>: from the offense's point of view in the offense bars and the
+      defense's point of view in the defense bars. "Up 7–13" on the defense side means the defense's
+      team was leading by 7 to 13.</li>
+    <li><b>First play of drive</b>: the first run or pass of each drive.</li>
+    <li><b>First play after timeout</b>: a team's first run or pass after a timeout called during its
+      possession, plus its first run or pass after the end of the 1st and 3rd quarters.</li>
+    <li><b>Under 2 min in half</b>: 2nd or 4th quarter with 2:00 or less on the clock.</li>
+    <li><b>Previous drive ended with</b>: for the offense, how its own previous drive in the game
+      ended. For the defense, how the previous drive against it ended. Choosing a subset limits the view to the
+      first play of each drive, because that's when the previous result is freshest.</li>
+  </ul>
+  <p>In the Custom Filter tab, the {{ current }} chart ignores the Year filter, so it always shows this season.
+    Views with fewer than 10 current-season plays are flagged as a small sample.</p>
+
+  <h2>Data</h2>
+  <p>Play-by-play from <a href="https://github.com/nflverse/nflverse-data">nflverse</a>, updated
+    daily during the season; team colors from nflverse as well. The site rebuilds every morning.
+    Source code: <a href="https://github.com/ctravasos/nfl-run-pass">github.com/ctravasos/nfl-run-pass</a>.</p>
+</div>
+{% endblock %}

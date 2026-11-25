@@ -1,0 +1,60 @@
+# Rebuilds the site from the latest nflverse play-by-play and publishes it to GitHub Pages.
+name: Build and deploy
+
+on:
+  schedule:
+    # nflverse refreshes play-by-play overnight. Two runs a day, off the top of the hour, because
+    # GitHub often starts scheduled jobs late. (UTC; roughly 6am and 2pm Eastern)
+    - cron: "17 11,19 * * *"
+  workflow_dispatch:       # "Run workflow" button for manual rebuilds
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Past seasons never change: cache the raw files so only the current season downloads each run.
+      - uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: raw-${{ github.run_id }}
+          restore-keys: raw-
+
+      - run: python run.py update
+      - run: python run.py build
+        env:
+          # Pages serves project repos at /<repo>/; a <user>.github.io repo or custom domain is served at /
+          SITE_BASE: ${{ !endsWith(github.event.repository.name, '.github.io') && format('/{0}', github.event.repository.name) || '' }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

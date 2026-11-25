@@ -1,0 +1,1082 @@
+---
+title: "NFL Run/Pass Decision Analysis"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Set Up
+
+The first thing we need to do is load the packages we will be using for this analysis.
+If you need to install any of them, un-comment the relevant lines below:
+
+```{r}
+# Install Packages
+# install.packages("nflfastR")     # NFL play-by-play data
+# install.packages("ggplot2")      # Plotting
+# install.packages("ggimage")      # Team logo images on plots
+# install.packages("ggrepel")      # Non-overlapping text labels
+# install.packages("dplyr")        # Data manipulation
+```
+
+```{r}
+# Load Packages
+library(nflfastR)   # NFL play-by-play data
+library(ggplot2)    # Plotting
+library(ggimage)    # Team logo images
+library(ggrepel)    # Non-overlapping labels
+library(dplyr)      # Data manipulation
+```
+
+We will define a custom theme and color palette here once so every plot is consistent:
+
+```{r}
+# Custom plot theme
+theme_nfl <- theme_minimal(base_size = 11) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 13),
+    plot.subtitle      = element_text(size = 10, color = "gray45"),
+    axis.title         = element_text(size = 10),
+    axis.text          = element_text(size = 9),
+    legend.title       = element_text(size = 10, face = "bold"),
+    legend.text        = element_text(size = 9),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    strip.text         = element_text(face = "bold", size = 10)
+  )
+
+# Season config
+current_season     <- 2026
+historical_seasons <- (current_season - 4):current_season   # 2022–2026
+
+# League-wide run/pass colors
+col_run  <- "#2471a3"   # Blue  — run
+col_pass <- "#c0392b"   # Red   — pass
+
+# Raiders team colors
+col_run_lv  <- "#a5acaf"  # Silver — run
+col_pass_lv <- "#1a1a1a"  # Black  — pass
+
+# Season range label
+season_label <- paste0(current_season, " Season  |  ",
+                       min(historical_seasons), "–", max(historical_seasons),
+                       " avg in parentheses")
+```
+
+## Generating the Data File
+
+Run the chunk below **once** to download raw play-by-play data, compute drive context columns, and save a slim `.rda` file. After it runs you can comment it out and just load the file in the next chunk.
+
+```{r}
+# ── Data Generation (run once, then comment out) ──────────────────────────────
+library(nflfastR)
+library(dplyr)
+
+raw_pbp <- as.data.frame(load_pbp(seasons = historical_seasons))
+
+# Step 1: Summarise each drive — determine granular outcome from play-level columns
+drive_meta <- raw_pbp %>%
+  filter(season_type %in% c("REG", "POST"), !is.na(posteam)) %>%
+  group_by(game_id, drive) %>%
+  summarise(
+    posteam    = first(posteam),
+    defteam    = first(defteam),
+    is_pass_td = any(pass_touchdown == 1,                          na.rm = TRUE),
+    is_rush_td = any(rush_touchdown  == 1,                         na.rm = TRUE),
+    is_fg_made = any(field_goal_result == "made",                  na.rm = TRUE),
+    is_fg_miss = any(field_goal_result %in% c("missed","blocked"), na.rm = TRUE),
+    is_punt    = any(play_type == "punt",                          na.rm = TRUE),
+    is_int     = any(interception == 1,                            na.rm = TRUE),
+    is_fumble  = any(fumble_lost == 1,                             na.rm = TRUE),
+    is_downs   = any(fourth_down_failed == 1,                      na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(drive_outcome = case_when(
+    is_pass_td ~ "Passing TD",
+    is_rush_td ~ "Rushing TD",
+    is_fg_made ~ "FG Made",
+    is_fg_miss ~ "FG Missed",
+    is_punt    ~ "Punt",
+    is_int     ~ "Interception",
+    is_fumble  ~ "Fumble",
+    is_downs   ~ "Turnover on Downs",
+    TRUE       ~ "Other"
+  ))
+
+# Step 2a: Offensive context — what did this offense's own previous drive end with?
+prev_off_drive <- drive_meta %>%
+  arrange(game_id, drive) %>%
+  group_by(game_id, posteam) %>%
+  mutate(prev_own_drive_result = lag(drive_outcome)) %>%
+  ungroup() %>%
+  select(game_id, drive, prev_own_drive_result)
+
+# Step 2b: Defensive context — what did the previous opponent do against this defteam?
+#           (i.e., how did Team B's last defensive series end?)
+prev_def_drive <- drive_meta %>%
+  arrange(game_id, drive) %>%
+  group_by(game_id, defteam) %>%
+  mutate(prev_def_drive_result = lag(drive_outcome)) %>%
+  ungroup() %>%
+  select(game_id, drive, prev_def_drive_result)
+
+# Step 3a: Compute after_timeout flag
+# Flags the very next run/pass play after a timeout that was called during that
+# team's own possession (either team called it while they had the ball).
+# Also flags each team's first run/pass play of Q2 and Q4 (end-of-Q1/Q3 break).
+
+# Slim run/pass play index used for joining
+rp_index <- raw_pbp %>%
+  filter(play_type %in% c("run", "pass"), !is.na(yards_gained),
+         season_type %in% c("REG", "POST"), !is.na(posteam)) %>%
+  select(game_id, play_id, posteam, qtr)
+
+# All timeout events with the possession team at the time
+timeout_events <- raw_pbp %>%
+  filter(season_type %in% c("REG", "POST"), !is.na(posteam),
+         coalesce(timeout, 0) == 1) %>%
+  select(game_id, timeout_play_id = play_id, posteam)
+
+# For each timeout, find the very next run/pass play for the SAME possession team
+timeout_next <- timeout_events %>%
+  inner_join(rp_index %>% select(game_id, play_id, posteam),
+             by = c("game_id", "posteam")) %>%
+  filter(play_id > timeout_play_id) %>%
+  group_by(game_id, timeout_play_id) %>%
+  slice_min(play_id, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  distinct(game_id, play_id) %>%
+  mutate(after_timeout = TRUE)
+
+# Each team's first run/pass play of Q2 or Q4 (end-of-Q1 / end-of-Q3 break)
+qtr_break_next <- rp_index %>%
+  arrange(game_id, play_id) %>%
+  group_by(game_id, posteam) %>%
+  mutate(prev_qtr = lag(qtr, default = -1L)) %>%
+  ungroup() %>%
+  filter((qtr == 2L & prev_qtr == 1L) | (qtr == 4L & prev_qtr == 3L)) %>%
+  distinct(game_id, play_id) %>%
+  mutate(after_timeout = TRUE)
+
+timeout_flags <- bind_rows(timeout_next, qtr_break_next) %>%
+  distinct(game_id, play_id, .keep_all = TRUE)
+
+# Step 3b: Filter to run/pass plays, tag first play of each drive, join all contexts
+pbp_nfl <- raw_pbp %>%
+  filter(
+    play_type   %in% c("run", "pass"),
+    season_type %in% c("REG", "POST"),
+    !is.na(yards_gained),
+    !is.na(posteam)
+  ) %>%
+  arrange(game_id, play_id) %>%
+  group_by(game_id, drive) %>%
+  mutate(first_drive_play = row_number() == 1) %>%
+  ungroup() %>%
+  left_join(prev_off_drive,  by = c("game_id", "drive")) %>%
+  left_join(prev_def_drive,  by = c("game_id", "drive")) %>%
+  left_join(timeout_flags,   by = c("game_id", "play_id")) %>%
+  mutate(after_timeout = coalesce(after_timeout, FALSE)) %>%
+  select(
+    play_type, posteam, defteam, down, ydstogo,
+    yardline_100, score_differential, qtr, season,
+    quarter_seconds_remaining,
+    first_drive_play, after_timeout, prev_own_drive_result, prev_def_drive_result
+  )
+
+save(pbp_nfl, file = "C:/Users/c.travasos/Downloads/SBx/nfl_pbp.rda")
+message("Saved nfl_pbp.rda — ", nrow(pbp_nfl), " plays")
+```
+
+## Loading the Data
+
+```{r}
+# Load the pre-built slim data file
+load("C:/Users/c.travasos/Downloads/SBx/nfl_pbp.rda")
+```
+
+We will also load the team information (colors and logos) bundled with nflfastR:
+
+```{r}
+# Load team logos and colors
+team_info <- nflfastR::teams_colors_logos
+```
+
+---
+
+# Data Exploration
+
+Before diving into analysis, let's explore the dataset to understand what we are working with.
+
+View the first few rows:
+
+```{r}
+head(pbp_nfl)
+```
+
+View the last few rows:
+
+```{r}
+tail(pbp_nfl)
+```
+
+Check the dimensions of the dataset:
+
+```{r}
+dim(pbp_nfl)
+```
+
+View a summary of all columns:
+
+```{r}
+summary(pbp_nfl)
+```
+
+For this analysis the key columns we will be working with are:
+
+* `play_type` - Type of play (`run` or `pass`)
+* `posteam` - The team with possession (offense)
+* `defteam` - The defending team
+* `down` - The down (1, 2, 3, or 4)
+* `ydstogo` - Yards needed for a first down
+* `yardline_100` - Yards from the opposing end zone (100 = own goal line, 1 = opponent goal line)
+* `score_differential` - Score difference at the time of the play (positive = leading)
+* `qtr` - Quarter of the game
+* `season` - The NFL season year
+* `first_drive_play` - TRUE if this is the first play of the drive
+* `after_timeout` - TRUE if a timeout (or end-of-Q1/Q3 break) occurred since the previous run/pass play
+* `prev_own_drive_result` - How the possession team's previous own drive ended (e.g. "Passing TD", "Punt", "Interception")
+
+Let's filter the data down to just run and pass plays, removing special teams, penalties, and other play types:
+
+```{r}
+# pbp_nfl is already filtered to run/pass plays with NAs removed by the
+# generation script — assign directly
+rp_plays <- pbp_nfl
+```
+
+We will also pre-build all the situational bins here so they are available throughout the analysis:
+
+```{r}
+rp_plays <- rp_plays %>%
+  mutate(
+    # Distance bins
+    distance_bin = case_when(
+      ydstogo <= 3   ~ "Short (1-3)",
+      ydstogo <= 7   ~ "Medium (4-7)",
+      ydstogo <= 10  ~ "Standard (8-10)",
+      ydstogo > 10   ~ "Long (10+)"
+    ),
+    distance_bin = factor(distance_bin,
+                          levels = c("Short (1-3)", "Medium (4-7)",
+                                     "Standard (8-10)", "Long (10+)")),
+    # Field position zones (numbers = yards from own end zone)
+    field_zone = case_when(
+      yardline_100 >= 80 ~ "Own Territory (0-20)",
+      yardline_100 >= 51 ~ "Own Half (21-50)",
+      yardline_100 >= 21 ~ "Opponent Half (51-79)",
+      yardline_100 <= 20 ~ "Red Zone (1-20)"
+    ),
+    field_zone = factor(field_zone,
+                        levels = c("Own Territory (0-20)", "Own Half (21-50)",
+                                   "Opponent Half (51-79)", "Red Zone (1-20)")),
+    # Score differential bins
+    score_bin = case_when(
+      score_differential <= -21 ~ "Down 21+",
+      score_differential <= -14 ~ "Down 14-20",
+      score_differential <= -7  ~ "Down 7-13",
+      score_differential <= -1  ~ "Down 1-6",
+      score_differential == 0   ~ "Tied",
+      score_differential <= 6   ~ "Up 1-6",
+      score_differential <= 13  ~ "Up 7-13",
+      score_differential <= 20  ~ "Up 14-20",
+      score_differential >= 21  ~ "Up 21+"
+    ),
+    score_bin = factor(score_bin,
+                       levels = c("Down 21+", "Down 14-20", "Down 7-13", "Down 1-6",
+                                  "Tied", "Up 1-6", "Up 7-13", "Up 14-20", "Up 21+"))
+  )
+```
+
+```{r}
+# Drive context bins — requires prev_own_drive_result column (from generation script)
+drive_ctx_levels <- c("Passing TD", "Rushing TD", "FG Made", "FG Missed",
+                      "Punt", "Interception", "Fumble", "Turnover on Downs", "Other")
+
+if (all(c("prev_own_drive_result", "prev_def_drive_result") %in% names(rp_plays))) {
+  rp_plays <- rp_plays %>%
+    mutate(
+      drive_context     = factor(prev_own_drive_result, levels = drive_ctx_levels),
+      drive_context_def = factor(prev_def_drive_result, levels = drive_ctx_levels)
+    )
+} else {
+  rp_plays <- rp_plays %>%
+    mutate(drive_context = NA_character_, drive_context_def = NA_character_, first_drive_play = FALSE)
+  message("Drive context columns not found — regenerate nfl_pbp.rda to enable drive analysis.")
+}
+```
+
+Check how many plays we are working with:
+
+```{r}
+dim(rp_plays)
+```
+
+---
+
+# League-Wide Run/Pass Tendencies
+
+Before looking at individual teams, let's understand the league-wide tendencies across all three seasons.
+
+## Overall Run/Pass Split
+
+```{r}
+# Calculate overall run/pass split
+overall_split <- rp_plays %>%
+  group_by(play_type) %>%
+  summarise(n = n()) %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+
+overall_split
+```
+
+```{r}
+ggplot(overall_split, aes(x = play_type, y = pct, fill = play_type)) +
+  geom_col(width = 0.45) +
+  geom_text(aes(label = paste0(pct, "%")),
+            vjust = -0.4, fontface = "bold", size = 4.5) +
+  scale_fill_manual(values = c("run" = col_run, "pass" = col_pass)) +
+  scale_y_continuous(limits = c(0, 70), expand = c(0, 0)) +
+  theme_nfl +
+  theme(legend.position = "none") +
+  labs(x = "Play Type",
+       y = "Percentage of Plays (%)",
+       title = "NFL League-Wide Run/Pass Split",
+       subtitle = season_label)
+```
+
+## Run/Pass Split by Down
+
+```{r}
+# Calculate run/pass split by down
+split_by_down <- rp_plays %>%
+  filter(down %in% c(1, 2, 3, 4)) %>%
+  group_by(down, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(down) %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+
+split_by_down
+```
+
+```{r}
+ggplot(split_by_down, aes(x = factor(down), y = pct, fill = play_type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("run" = col_run, "pass" = col_pass)) +
+  scale_y_continuous(limits = c(0, 85), expand = c(0, 0)) +
+  theme_nfl +
+  labs(x = "Down",
+       y = "Percentage of Plays (%)",
+       title = "NFL Run/Pass Split by Down",
+       subtitle = season_label,
+       fill = "Play Type")
+```
+
+## Run/Pass Split by Distance
+
+```{r}
+# Calculate run/pass split by distance bin
+split_by_dist <- rp_plays %>%
+  group_by(distance_bin, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(distance_bin) %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+```
+
+```{r}
+ggplot(split_by_dist, aes(x = distance_bin, y = pct, fill = play_type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("run" = col_run, "pass" = col_pass)) +
+  scale_y_continuous(limits = c(0, 85), expand = c(0, 0)) +
+  theme_nfl +
+  labs(x = "Distance to First Down",
+       y = "Percentage of Plays (%)",
+       title = "NFL Run/Pass Split by Distance",
+       subtitle = season_label,
+       fill = "Play Type")
+```
+
+## Run/Pass Split by Field Position
+
+```{r}
+# Calculate run/pass split by field position
+split_by_zone <- rp_plays %>%
+  filter(!is.na(field_zone)) %>%
+  group_by(field_zone, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(field_zone) %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+```
+
+```{r}
+ggplot(split_by_zone, aes(x = field_zone, y = pct, fill = play_type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("run" = col_run, "pass" = col_pass)) +
+  scale_y_continuous(limits = c(0, 85), expand = c(0, 0)) +
+  theme_nfl +
+  theme(axis.text.x = element_text(angle = 12, hjust = 1)) +
+  labs(x = "Field Position Zone",
+       y = "Percentage of Plays (%)",
+       title = "NFL Run/Pass Split by Field Position",
+       subtitle = season_label,
+       fill = "Play Type")
+```
+
+---
+
+# Team-Level Tendencies
+
+Now let's zoom in on individual team tendencies. Which teams run the most? Which teams pass the most?
+
+## Run/Pass Rate by Team
+
+```{r}
+# Calculate run/pass counts and rates per team
+team_split <- rp_plays %>%
+  group_by(posteam, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(posteam) %>%
+  mutate(total = sum(n),
+         pct   = round(n / total * 100, 1)) %>%
+  filter(play_type == "pass") %>%
+  rename(pass_rate = pct, pass_n = n) %>%
+  mutate(rush_rate = 100 - pass_rate)
+
+# Join team colors and logos
+team_split <- team_split %>%
+  left_join(team_info %>% select(team_abbr, team_color, team_logo_espn),
+            by = c("posteam" = "team_abbr"))
+```
+
+```{r fig.height=9}
+ggplot(team_split, aes(x = reorder(posteam, pass_rate), y = pass_rate)) +
+  geom_col(aes(fill = team_color), width = 0.7) +
+  geom_image(aes(image = team_logo_espn), size = 0.03, asp = 16/9) +
+  geom_hline(yintercept = mean(team_split$pass_rate),
+             linetype = "dashed", color = "gray30", linewidth = 0.6) +
+  annotate("text", x = 1.5, y = mean(team_split$pass_rate) + 1.2,
+           label = paste0("League Avg: ", round(mean(team_split$pass_rate), 1), "%"),
+           size = 3, color = "gray30", hjust = 0) +
+  scale_fill_identity() +
+  scale_y_continuous(limits = c(0, 80), expand = c(0, 0)) +
+  coord_flip() +
+  theme_nfl +
+  theme(panel.grid.major.x = element_line(color = "gray90"),
+        panel.grid.major.y = element_blank()) +
+  labs(x = NULL,
+       y = "Pass Rate (%)",
+       title = "NFL Pass Rate by Team",
+       subtitle = season_label)
+```
+
+---
+
+# Situational Decision-Making
+
+Now let's look at how run/pass decisions shift based on game situation.
+
+## Effect of Score Differential on Play Calling
+
+```{r}
+# League pass rate by score bin
+pass_by_score <- rp_plays %>%
+  filter(!is.na(score_bin)) %>%
+  group_by(score_bin, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(score_bin) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  filter(play_type == "pass")
+```
+
+```{r}
+ggplot(pass_by_score, aes(x = score_bin, y = pct, group = 1)) +
+  geom_area(fill = col_pass, alpha = 0.12) +
+  geom_line(color = col_pass, linewidth = 1.2) +
+  geom_point(color = col_pass, size = 3) +
+  geom_text(aes(label = paste0(pct, "%")),
+            vjust = -0.8, size = 3.2, fontface = "bold", color = col_pass) +
+  geom_hline(yintercept = 50, linetype = "dashed", color = "gray50", linewidth = 0.6) +
+  scale_y_continuous(limits = c(30, 85), expand = c(0, 0)) +
+  theme_nfl +
+  theme(axis.text.x = element_text(angle = 12, hjust = 1)) +
+  labs(x = "Score Differential",
+       y = "Pass Rate (%)",
+       title = "NFL Pass Rate by Score Differential",
+       subtitle = season_label)
+```
+
+## Effect of Quarter on Play Calling
+
+```{r}
+# League pass rate by quarter
+pass_by_qtr <- rp_plays %>%
+  filter(qtr %in% c(1, 2, 3, 4)) %>%
+  group_by(qtr, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(qtr) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  filter(play_type == "pass")
+```
+
+```{r}
+ggplot(pass_by_qtr, aes(x = factor(qtr), y = pct, group = 1)) +
+  geom_area(fill = col_pass, alpha = 0.12) +
+  geom_line(color = col_pass, linewidth = 1.2) +
+  geom_point(color = col_pass, size = 3.5) +
+  geom_text(aes(label = paste0(pct, "%")),
+            vjust = -0.8, size = 3.5, fontface = "bold", color = col_pass) +
+  geom_hline(yintercept = 50, linetype = "dashed", color = "gray50", linewidth = 0.6) +
+  scale_y_continuous(limits = c(30, 75), expand = c(0, 0)) +
+  theme_nfl +
+  labs(x = "Quarter",
+       y = "Pass Rate (%)",
+       title = "NFL Pass Rate by Quarter",
+       subtitle = season_label)
+```
+
+---
+
+# Las Vegas Raiders — Offensive Breakdown
+
+We will now filter down to only Raiders offensive plays and apply the same breakdowns, with a dashed line showing the league average for each situation as a reference point.
+
+```{r}
+# Filter to Raiders offensive plays only
+raiders <- rp_plays %>%
+  filter(posteam == "LV")
+
+dim(raiders)
+```
+
+```{r}
+# Pre-compute league averages for reference lines
+lg_pass_rate       <- mean(rp_plays$play_type == "pass") * 100
+lg_pass_by_down    <- rp_plays %>%
+  filter(down %in% c(1,2,3,4)) %>%
+  group_by(down) %>%
+  summarise(lg_pct = round(mean(play_type == "pass") * 100, 1))
+lg_pass_by_dist    <- rp_plays %>%
+  group_by(distance_bin) %>%
+  summarise(lg_pct = round(mean(play_type == "pass") * 100, 1))
+lg_pass_by_zone    <- rp_plays %>%
+  filter(!is.na(field_zone)) %>%
+  group_by(field_zone) %>%
+  summarise(lg_pct = round(mean(play_type == "pass") * 100, 1))
+```
+
+## Overall Run/Pass Split
+
+```{r}
+raiders_split <- raiders %>%
+  group_by(play_type) %>%
+  summarise(n = n()) %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+
+raiders_split
+```
+
+```{r}
+ggplot(raiders_split, aes(x = play_type, y = pct, fill = play_type)) +
+  geom_col(width = 0.45) +
+  geom_text(aes(label = paste0(pct, "%")),
+            vjust = -0.4, fontface = "bold", size = 4.5) +
+  scale_fill_manual(values = c("run" = col_run_lv, "pass" = col_pass_lv)) +
+  scale_y_continuous(limits = c(0, 70), expand = c(0, 0)) +
+  theme_nfl +
+  theme(legend.position = "none") +
+  labs(x = "Play Type",
+       y = "Percentage of Plays (%)",
+       title = "Las Vegas Raiders — Run/Pass Split",
+       subtitle = season_label)
+```
+
+## Run/Pass Split by Down
+
+```{r}
+raiders_by_down <- raiders %>%
+  filter(down %in% c(1, 2, 3, 4)) %>%
+  group_by(down, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(down) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  left_join(lg_pass_by_down, by = "down")
+
+raiders_by_down
+```
+
+```{r}
+ggplot(raiders_by_down, aes(x = factor(down), y = pct, fill = play_type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_point(data = raiders_by_down %>% filter(play_type == "pass"),
+             aes(y = lg_pct), color = col_pass, shape = 95, size = 8,
+             position = position_dodge(width = 0.7)) +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("run" = col_run_lv, "pass" = col_pass_lv)) +
+  scale_y_continuous(limits = c(0, 90), expand = c(0, 0)) +
+  theme_nfl +
+  labs(x = "Down",
+       y = "Percentage of Plays (%)",
+       title = "Las Vegas Raiders — Run/Pass Split by Down",
+       subtitle = paste(season_label, "| — league avg pass rate"),
+       fill = "Play Type")
+```
+
+## Run/Pass Split by Distance
+
+```{r}
+raiders_by_dist <- raiders %>%
+  group_by(distance_bin, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(distance_bin) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  left_join(lg_pass_by_dist, by = "distance_bin")
+```
+
+```{r}
+ggplot(raiders_by_dist, aes(x = distance_bin, y = pct, fill = play_type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_point(data = raiders_by_dist %>% filter(play_type == "pass"),
+             aes(y = lg_pct), color = col_pass, shape = 95, size = 8,
+             position = position_dodge(width = 0.7)) +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("run" = col_run_lv, "pass" = col_pass_lv)) +
+  scale_y_continuous(limits = c(0, 90), expand = c(0, 0)) +
+  theme_nfl +
+  labs(x = "Distance to First Down",
+       y = "Percentage of Plays (%)",
+       title = "Las Vegas Raiders — Run/Pass Split by Distance",
+       subtitle = paste(season_label, "| — league avg pass rate"),
+       fill = "Play Type")
+```
+
+## Run/Pass Split by Field Position
+
+```{r}
+raiders_by_zone <- raiders %>%
+  filter(!is.na(field_zone)) %>%
+  group_by(field_zone, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(field_zone) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  left_join(lg_pass_by_zone, by = "field_zone")
+```
+
+```{r}
+ggplot(raiders_by_zone, aes(x = field_zone, y = pct, fill = play_type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_point(data = raiders_by_zone %>% filter(play_type == "pass"),
+             aes(y = lg_pct), color = col_pass, shape = 95, size = 8,
+             position = position_dodge(width = 0.7)) +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("run" = col_run_lv, "pass" = col_pass_lv)) +
+  scale_y_continuous(limits = c(0, 90), expand = c(0, 0)) +
+  theme_nfl +
+  theme(axis.text.x = element_text(angle = 12, hjust = 1)) +
+  labs(x = "Field Position Zone",
+       y = "Percentage of Plays (%)",
+       title = "Las Vegas Raiders — Run/Pass Split by Field Position",
+       subtitle = paste(season_label, "| — league avg pass rate"),
+       fill = "Play Type")
+```
+
+## Run/Pass Split by Score Differential
+
+```{r}
+raiders_by_score <- raiders %>%
+  filter(!is.na(score_bin)) %>%
+  group_by(score_bin, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(score_bin) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  filter(play_type == "pass") %>%
+  left_join(pass_by_score %>% select(score_bin, lg_pct = pct), by = "score_bin")
+```
+
+```{r}
+ggplot(raiders_by_score, aes(x = score_bin, group = 1)) +
+  geom_area(aes(y = pct), fill = col_pass_lv, alpha = 0.15) +
+  geom_line(aes(y = pct), color = col_pass_lv, linewidth = 1.2) +
+  geom_line(aes(y = lg_pct), color = col_pass, linewidth = 0.8, linetype = "dashed") +
+  geom_point(aes(y = pct), color = col_pass_lv, size = 3) +
+  geom_text(aes(y = pct, label = paste0(pct, "%")),
+            vjust = -0.8, size = 3.2, fontface = "bold", color = col_pass_lv) +
+  scale_y_continuous(limits = c(25, 95), expand = c(0, 0)) +
+  theme_nfl +
+  theme(axis.text.x = element_text(angle = 12, hjust = 1)) +
+  labs(x = "Score Differential",
+       y = "Pass Rate (%)",
+       title = "Las Vegas Raiders — Pass Rate by Score Differential",
+       subtitle = paste(season_label, "| dashed = league avg"))
+```
+
+## Run/Pass Split by Quarter
+
+```{r}
+raiders_by_qtr <- raiders %>%
+  filter(qtr %in% c(1, 2, 3, 4)) %>%
+  group_by(qtr, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(qtr) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  filter(play_type == "pass") %>%
+  left_join(pass_by_qtr %>% select(qtr, lg_pct = pct), by = "qtr")
+```
+
+```{r}
+ggplot(raiders_by_qtr, aes(x = factor(qtr), group = 1)) +
+  geom_area(aes(y = pct), fill = col_pass_lv, alpha = 0.15) +
+  geom_line(aes(y = pct), color = col_pass_lv, linewidth = 1.2) +
+  geom_line(aes(y = lg_pct), color = col_pass, linewidth = 0.8, linetype = "dashed") +
+  geom_point(aes(y = pct), color = col_pass_lv, size = 3.5) +
+  geom_text(aes(y = pct, label = paste0(pct, "%")),
+            vjust = -0.8, size = 3.5, fontface = "bold", color = col_pass_lv) +
+  scale_y_continuous(limits = c(25, 80), expand = c(0, 0)) +
+  theme_nfl +
+  labs(x = "Quarter",
+       y = "Pass Rate (%)",
+       title = "Las Vegas Raiders — Pass Rate by Quarter",
+       subtitle = paste(season_label, "| dashed = league avg"))
+```
+
+---
+
+# Las Vegas Raiders — Defensive Breakdown
+
+Now let's look at the inverse: how do opposing offenses attack the Raiders? We filter to all plays where the Raiders are the defense and apply the same breakdowns.
+
+Note: `score_differential` is always from the offensive team's perspective, so we negate it here so the score bins reflect the Raiders' game situation.
+
+```{r}
+# Filter to plays where Raiders are on defense
+raiders_def <- rp_plays %>%
+  filter(defteam == "LV") %>%
+  mutate(raiders_score_bin = case_when(
+    -score_differential <= -21 ~ "Down 21+",
+    -score_differential <= -14 ~ "Down 14-20",
+    -score_differential <= -7  ~ "Down 7-13",
+    -score_differential <= -1  ~ "Down 1-6",
+    -score_differential == 0   ~ "Tied",
+    -score_differential <= 6   ~ "Up 1-6",
+    -score_differential <= 13  ~ "Up 7-13",
+    -score_differential <= 20  ~ "Up 14-20",
+    -score_differential >= 21  ~ "Up 21+"
+  ),
+  raiders_score_bin = factor(raiders_score_bin,
+                             levels = c("Down 21+", "Down 14-20", "Down 7-13", "Down 1-6",
+                                        "Tied", "Up 1-6", "Up 7-13", "Up 14-20", "Up 21+")))
+
+dim(raiders_def)
+```
+
+## Overall Run/Pass Split Against
+
+```{r}
+raiders_def_split <- raiders_def %>%
+  group_by(play_type) %>%
+  summarise(n = n()) %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+
+raiders_def_split
+```
+
+```{r}
+ggplot(raiders_def_split, aes(x = play_type, y = pct, fill = play_type)) +
+  geom_col(width = 0.45) +
+  geom_text(aes(label = paste0(pct, "%")),
+            vjust = -0.4, fontface = "bold", size = 4.5) +
+  scale_fill_manual(values = c("run" = col_run_lv, "pass" = col_pass_lv)) +
+  scale_y_continuous(limits = c(0, 70), expand = c(0, 0)) +
+  theme_nfl +
+  theme(legend.position = "none") +
+  labs(x = "Play Type",
+       y = "Percentage of Plays (%)",
+       title = "Opponent Run/Pass Split vs Las Vegas Raiders",
+       subtitle = season_label)
+```
+
+## Opponent Run/Pass Split by Down
+
+```{r}
+raiders_def_by_down <- raiders_def %>%
+  filter(down %in% c(1, 2, 3, 4)) %>%
+  group_by(down, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(down) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  left_join(lg_pass_by_down, by = "down")
+
+raiders_def_by_down
+```
+
+```{r}
+ggplot(raiders_def_by_down, aes(x = factor(down), y = pct, fill = play_type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_point(data = raiders_def_by_down %>% filter(play_type == "pass"),
+             aes(y = lg_pct), color = col_pass, shape = 95, size = 8,
+             position = position_dodge(width = 0.7)) +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("run" = col_run_lv, "pass" = col_pass_lv)) +
+  scale_y_continuous(limits = c(0, 90), expand = c(0, 0)) +
+  theme_nfl +
+  labs(x = "Down",
+       y = "Percentage of Plays (%)",
+       title = "Opponent Run/Pass Split by Down vs Las Vegas Raiders",
+       subtitle = paste(season_label, "| — league avg pass rate"),
+       fill = "Play Type")
+```
+
+## Opponent Run/Pass Split by Distance
+
+```{r}
+raiders_def_by_dist <- raiders_def %>%
+  group_by(distance_bin, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(distance_bin) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  left_join(lg_pass_by_dist, by = "distance_bin")
+```
+
+```{r}
+ggplot(raiders_def_by_dist, aes(x = distance_bin, y = pct, fill = play_type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_point(data = raiders_def_by_dist %>% filter(play_type == "pass"),
+             aes(y = lg_pct), color = col_pass, shape = 95, size = 8,
+             position = position_dodge(width = 0.7)) +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("run" = col_run_lv, "pass" = col_pass_lv)) +
+  scale_y_continuous(limits = c(0, 90), expand = c(0, 0)) +
+  theme_nfl +
+  labs(x = "Distance to First Down",
+       y = "Percentage of Plays (%)",
+       title = "Opponent Run/Pass Split by Distance vs Las Vegas Raiders",
+       subtitle = paste(season_label, "| — league avg pass rate"),
+       fill = "Play Type")
+```
+
+## Opponent Run/Pass Split by Field Position
+
+```{r}
+raiders_def_by_zone <- raiders_def %>%
+  filter(!is.na(field_zone)) %>%
+  group_by(field_zone, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(field_zone) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  left_join(lg_pass_by_zone, by = "field_zone")
+```
+
+```{r}
+ggplot(raiders_def_by_zone, aes(x = field_zone, y = pct, fill = play_type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_point(data = raiders_def_by_zone %>% filter(play_type == "pass"),
+             aes(y = lg_pct), color = col_pass, shape = 95, size = 8,
+             position = position_dodge(width = 0.7)) +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("run" = col_run_lv, "pass" = col_pass_lv)) +
+  scale_y_continuous(limits = c(0, 90), expand = c(0, 0)) +
+  theme_nfl +
+  theme(axis.text.x = element_text(angle = 12, hjust = 1)) +
+  labs(x = "Field Position Zone",
+       y = "Percentage of Plays (%)",
+       title = "Opponent Run/Pass Split by Field Position vs Las Vegas Raiders",
+       subtitle = paste(season_label, "| — league avg pass rate"),
+       fill = "Play Type")
+```
+
+## Opponent Run/Pass Split by Score Differential
+
+```{r}
+raiders_def_by_score <- raiders_def %>%
+  filter(!is.na(raiders_score_bin)) %>%
+  group_by(raiders_score_bin, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(raiders_score_bin) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  filter(play_type == "pass") %>%
+  left_join(pass_by_score %>% select(score_bin, lg_pct = pct),
+            by = c("raiders_score_bin" = "score_bin"))
+```
+
+```{r}
+ggplot(raiders_def_by_score, aes(x = raiders_score_bin, group = 1)) +
+  geom_area(aes(y = pct), fill = col_pass_lv, alpha = 0.15) +
+  geom_line(aes(y = pct), color = col_pass_lv, linewidth = 1.2) +
+  geom_line(aes(y = lg_pct), color = col_pass, linewidth = 0.8, linetype = "dashed") +
+  geom_point(aes(y = pct), color = col_pass_lv, size = 3) +
+  geom_text(aes(y = pct, label = paste0(pct, "%")),
+            vjust = -0.8, size = 3.2, fontface = "bold", color = col_pass_lv) +
+  scale_y_continuous(limits = c(25, 95), expand = c(0, 0)) +
+  theme_nfl +
+  theme(axis.text.x = element_text(angle = 12, hjust = 1)) +
+  labs(x = "Raiders Score Differential",
+       y = "Opponent Pass Rate (%)",
+       title = "Opponent Pass Rate by Score Differential vs Las Vegas Raiders",
+       subtitle = paste(season_label, "| dashed = league avg"))
+```
+
+## Opponent Run/Pass Split by Quarter
+
+```{r}
+raiders_def_by_qtr <- raiders_def %>%
+  filter(qtr %in% c(1, 2, 3, 4)) %>%
+  group_by(qtr, play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(qtr) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  filter(play_type == "pass") %>%
+  left_join(pass_by_qtr %>% select(qtr, lg_pct = pct), by = "qtr")
+```
+
+```{r}
+ggplot(raiders_def_by_qtr, aes(x = factor(qtr), group = 1)) +
+  geom_area(aes(y = pct), fill = col_pass_lv, alpha = 0.15) +
+  geom_line(aes(y = pct), color = col_pass_lv, linewidth = 1.2) +
+  geom_line(aes(y = lg_pct), color = col_pass, linewidth = 0.8, linetype = "dashed") +
+  geom_point(aes(y = pct), color = col_pass_lv, size = 3.5) +
+  geom_text(aes(y = pct, label = paste0(pct, "%")),
+            vjust = -0.8, size = 3.5, fontface = "bold", color = col_pass_lv) +
+  scale_y_continuous(limits = c(25, 80), expand = c(0, 0)) +
+  theme_nfl +
+  labs(x = "Quarter",
+       y = "Opponent Pass Rate (%)",
+       title = "Opponent Pass Rate by Quarter vs Las Vegas Raiders",
+       subtitle = paste(season_label, "| dashed = league avg"))
+```
+
+---
+
+# Custom Situation Filter
+
+Use this section to query any combination of down, distance, score differential, and quarter.
+Set any filter to `NULL` to include all values for that dimension.
+
+Valid options for each filter:
+* `sel_down` — `1`, `2`, `3`, `4`, or `NULL`
+* `sel_distance` — `"Short (1-3)"`, `"Medium (4-7)"`, `"Standard (8-10)"`, `"Long (10+)"`, or `NULL`
+* `sel_field` — `"Own Territory (0-20)"`, `"Own Half (21-50)"`, `"Opponent Half (51-79)"`, `"Red Zone (1-20)"`, or `NULL`
+* `sel_score` — `"Down 21+"`, `"Down 14-20"`, `"Down 7-13"`, `"Down 1-6"`, `"Tied"`, `"Up 1-6"`, `"Up 7-13"`, `"Up 14-20"`, `"Up 21+"`, or `NULL`
+* `sel_qtr` — `1`, `2`, `3`, `4`, `5` (OT), or `NULL`
+
+```{r}
+# --- Set your filters here ---
+sel_down     <- 2                        # e.g. 2
+sel_distance <- "Short (1-3)"            # e.g. "Short (1-3)"
+sel_field    <- "Opponent Half (51-79)"  # e.g. "Opponent Half (51-79)"
+sel_score    <- "Down 7-13"              # e.g. "Down 7-13"  (from Raiders' perspective)
+sel_qtr      <- 3                        # e.g. 3 — use 5 for OT
+# -----------------------------
+```
+
+```{r}
+# Helper function to apply filters
+apply_situation_filter <- function(df, score_col = "score_bin") {
+  if (!is.null(sel_down))     df <- df %>% filter(down == sel_down)
+  if (!is.null(sel_distance)) df <- df %>% filter(distance_bin == sel_distance)
+  if (!is.null(sel_field))    df <- df %>% filter(field_zone == sel_field)
+  if (!is.null(sel_score))    df <- df %>% filter(.data[[score_col]] == sel_score)
+  if (!is.null(sel_qtr))      df <- df %>% filter(qtr == sel_qtr)
+  df
+}
+
+# Auto-generate subtitle label from active filters
+situation_label <- paste(
+  c(if (!is.null(sel_down))     paste("Down:", sel_down),
+    if (!is.null(sel_distance)) paste("Distance:", sel_distance),
+    if (!is.null(sel_field))    paste("Field:", sel_field),
+    if (!is.null(sel_score))    paste("Score:", sel_score),
+    if (!is.null(sel_qtr))      paste("Quarter:", sel_qtr)),
+  collapse = " | "
+)
+```
+
+## Offense — Raiders Run/Pass Split for Selected Situation
+
+```{r}
+raiders_situation <- apply_situation_filter(raiders, score_col = "score_bin")
+
+raiders_sit_split <- raiders_situation %>%
+  group_by(play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+
+raiders_sit_split
+```
+
+```{r}
+ggplot(raiders_sit_split, aes(x = play_type, y = pct, fill = play_type)) +
+  geom_col(width = 0.45) +
+  geom_text(aes(label = paste0(pct, "%\n(n=", n, ")")),
+            vjust = -0.3, fontface = "bold", size = 4) +
+  scale_fill_manual(values = c("run" = col_run_lv, "pass" = col_pass_lv)) +
+  scale_y_continuous(limits = c(0, 80), expand = c(0, 0)) +
+  theme_nfl +
+  theme(legend.position = "none") +
+  labs(x = "Play Type",
+       y = "Percentage of Plays (%)",
+       title = "Las Vegas Raiders — Offense Run/Pass Split",
+       subtitle = situation_label)
+```
+
+## Defense — Opponent Run/Pass Split Against Raiders for Selected Situation
+
+```{r}
+raiders_def_situation <- apply_situation_filter(raiders_def, score_col = "raiders_score_bin")
+
+raiders_def_sit_split <- raiders_def_situation %>%
+  group_by(play_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+
+raiders_def_sit_split
+```
+
+```{r}
+ggplot(raiders_def_sit_split, aes(x = play_type, y = pct, fill = play_type)) +
+  geom_col(width = 0.45) +
+  geom_text(aes(label = paste0(pct, "%\n(n=", n, ")")),
+            vjust = -0.3, fontface = "bold", size = 4) +
+  scale_fill_manual(values = c("run" = col_run_lv, "pass" = col_pass_lv)) +
+  scale_y_continuous(limits = c(0, 80), expand = c(0, 0)) +
+  theme_nfl +
+  theme(legend.position = "none") +
+  labs(x = "Play Type",
+       y = "Percentage of Plays (%)",
+       title = "Opponent Run/Pass Split vs Las Vegas Raiders — Defense",
+       subtitle = situation_label)
+```

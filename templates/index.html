@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block head %}
+<script id="meta" type="application/json">{{ meta | tojson }}</script>
+<script src="{{ base }}/static/js/app.js" defer></script>
+{% endblock %}
+{% block content %}
+<div class="layout">
+  <aside class="sidebar">
+    <label class="field">
+      <span class="field-label">Offense</span>
+      <select id="sel-off"></select>
+      <span class="field-hint">How they call plays</span>
+    </label>
+    <label class="field">
+      <span class="field-label">Defense</span>
+      <select id="sel-def"></select>
+      <span class="field-hint">How opponents play against them</span>
+    </label>
+    <div id="legend" class="legend"></div>
+    <p class="muted">Labels: {{ current }}% ({{ season_range }} avg%). Regular season and playoffs; run and pass plays only.</p>
+  </aside>
+
+  <section class="main">
+    <header class="matchup" id="matchup"></header>
+    <div class="pill-group tabs" role="tablist">
+      <button class="pill active" data-tab="overview" role="tab">Split Overview</button>
+      <button class="pill" data-tab="custom" role="tab">Custom Filter</button>
+    </div>
+
+    <div id="tab-overview" class="tab">
+      <div id="overview" class="charts"><p class="muted">Loading…</p></div>
+    </div>
+
+    <div id="tab-custom" class="tab" hidden>
+      <div class="custom">
+        <div class="filters-panel">
+          <div class="filters-head">
+            <h3>Situation filters</h3>
+            <button id="clear" class="btn-clear">Clear all</button>
+          </div>
+          <div id="filters"></div>
+        </div>
+        <div id="custom" class="charts"></div>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,9 @@
+data/
+site/
+__pycache__/
+.venv/
+*.rda
+.Rhistory
+.RData
+.Rproj.user/
+rsconnect/
