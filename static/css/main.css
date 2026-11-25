@@ -110,6 +110,28 @@ select { background: var(--surface-2); color: var(--text); border: 1px solid var
 .filter-group .all-toggle { cursor: pointer; text-transform: none; letter-spacing: 0; }
 .filter-group .all-toggle:hover { color: var(--text); }
 
+/* This Week */
+.week-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+.day-label { font-size: 15px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .05em; margin: 26px 0 10px; }
+.game-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)); gap: 14px; }
+.game-card { background: var(--surface); border-radius: var(--radius); padding: 12px 14px; }
+.game-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding-bottom: 8px; border-bottom: 1px solid var(--surface-2); margin-bottom: 4px; }
+.game-teams { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; }
+.game-teams .gt { display: flex; align-items: center; gap: 6px; }
+.game-teams img { width: 28px; height: 28px; }
+.game-teams .at { color: var(--text-secondary); font-weight: 400; }
+.game-meta { font-size: var(--fs-sm); color: var(--text-secondary); }
+.game-meta .final { color: var(--text); font-weight: 700; text-transform: uppercase; font-size: var(--fs-xs); letter-spacing: .05em; }
+.mini-matchup { display: block; color: inherit; text-decoration: none; padding: 6px 6px 4px; margin: 4px -6px 0; border-radius: var(--radius); }
+.mini-matchup:hover { background: var(--surface-2); }
+.mini-title { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .05em; color: var(--text-secondary);
+  display: flex; justify-content: space-between; margin-bottom: 2px; }
+.mini-title .go { text-transform: none; letter-spacing: 0; opacity: 0; transition: opacity .15s; }
+.mini-matchup:hover .go { opacity: 1; color: var(--text); }
+.game-card .bar-row { grid-template-columns: 130px 1fr 52px; margin: 2px 0; }
+.game-card .bar { height: 22px; }
+
 /* About */
 .prose { max-width: 760px; }
 .prose p, .prose li { color: var(--text); line-height: 1.6; }
@@ -118,6 +140,7 @@ select { background: var(--surface-2); color: var(--text); border: 1px solid var
 @media (max-width: 900px) {
   .layout, .custom { grid-template-columns: 1fr; }
   .sidebar { position: static; }
-  .bar-row { grid-template-columns: 100px 1fr 52px; }
+  .bar-row, .game-card .bar-row { grid-template-columns: 100px 1fr 52px; }
+  .game-grid { grid-template-columns: 1fr; }
   .nav-refresh { display: none; }
 }

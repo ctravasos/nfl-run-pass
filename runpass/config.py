@@ -11,7 +11,8 @@ PROCESSED = ROOT / "data" / "processed"
 N_SEASONS = 5
 
 PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.parquet"
-TEAMS_URL = "https://github.com/nflverse/nflverse-data/releases/download/teams/teams_colors_logos.csv"
+SCHEDULE_URL = "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv"
+TEAMS_URL ="https://github.com/nflverse/nflverse-data/releases/download/teams/teams_colors_logos.csv"
 
 DEFAULT_OFFENSE = "LV"
 DEFAULT_DEFENSE = "LAC"

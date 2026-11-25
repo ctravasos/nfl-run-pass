@@ -15,7 +15,8 @@
     <span>NFL Run/Pass Tendencies</span>
   </a>
   <div class="nav-tabs">
-    <a href="{{ base }}/" class="nav-tab {{ 'active' if active == 'index' }}">Matchup</a>
+    <a href="{{ base }}/" class="nav-tab {{ 'active' if active == 'week' }}">This Week</a>
+    <a href="{{ base }}/matchup/" class="nav-tab {{ 'active' if active == 'matchup' }}">Matchup</a>
     <a href="{{ base }}/about/" class="nav-tab {{ 'active' if active == 'about' }}">How it works</a>
   </div>
   <div class="nav-refresh"><span>Updated</span> {{ updated }}</div>

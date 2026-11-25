@@ -21,6 +21,7 @@ DRIVE_OUTCOMES = ["Passing TD", "Rushing TD", "FG Made", "FG Missed", "Punt", "I
 
 PLAYS_FILE = config.PROCESSED / "plays.parquet"
 TEAMS_FILE = config.RAW / "teams_colors_logos.csv"
+SCHEDULE_FILE = config.RAW / "games.csv"
 
 
 def _download(url: str, path, force: bool) -> bool:
@@ -121,6 +122,7 @@ def update(all_seasons: bool = False) -> None:
         print(f"  {season}: {len(plays):,} run/pass plays")
         frames.append(plays)
     _download(config.TEAMS_URL, TEAMS_FILE, force=all_seasons)
+    _download(config.SCHEDULE_URL, SCHEDULE_FILE, force=True)   # kickoff times, lines and scores change daily
 
     config.PROCESSED.mkdir(parents=True, exist_ok=True)
     pd.concat(frames, ignore_index=True).to_parquet(PLAYS_FILE, index=False)

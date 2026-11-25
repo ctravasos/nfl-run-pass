@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ week.title if week else "This Week" }} — NFL Run/Pass Tendencies{% endblock %}
+{% block head %}
+<script>
+  // Old matchup links (/#off=LV&def=LAC) now live at /matchup/
+  if (/(^|[#&])off=/.test(location.hash)) location.replace("{{ base }}/matchup/" + location.hash);
+</script>
+{% endblock %}
+
+{% macro bar(label, team, cur, hist) -%}
+<div class="bar-row">
+  <div class="bar-label">{{ label }}</div>
+  <div class="bar">
+    {%- for kind, pct, h, color in [("Rush", cur.rush, hist.rush, team.color2), ("Pass", cur.pass, hist.pass, team.color)] if pct > 0 %}
+    <div class="seg" style="width:{{ pct }}%;background:{{ color }};color:{{ color | text_on }}" title="{{ kind }}: {{ pct | pct }}% ({{ h | pct }}%)">
+      {%- if pct >= 22 %}{{ pct | pct }}% ({{ h | pct }}%){% elif pct >= 8 %}{{ pct | pct }}%{% endif -%}
+    </div>
+    {%- endfor %}
+  </div>
+  <div class="bar-n">n={{ "{:,}".format(cur.n) }}</div>
+</div>
+{%- endmacro %}
+
+{% block content %}
+{% if not week %}
+  <h1>This Week</h1>
+  <p class="muted">No {{ current }} schedule yet. In the meantime, try the <a href="{{ base }}/matchup/">Matchup</a> tool.</p>
+{% else %}
+<div class="week-head">
+  <h1>{{ week.title }}</h1>
+  <span class="muted">{{ week.span }} · bars show {{ current }} run/pass split ({{ season_range }} avg) · click a matchup for the full breakdown</span>
+</div>
+
+{% for day in week.days %}
+<h2 class="day-label">{{ day.label }}</h2>
+<div class="game-grid">
+  {% for g in day.games %}
+  <article class="game-card">
+    <header class="game-head">
+      <div class="game-teams">
+        <span class="gt"><img src="{{ g.away.logo }}" alt="">{{ g.away.nick }}{% if g.final %} <b>{{ g.away_score }}</b>{% endif %}</span>
+        <span class="at">@</span>
+        <span class="gt"><img src="{{ g.home.logo }}" alt="">{{ g.home.nick }}{% if g.final %} <b>{{ g.home_score }}</b>{% endif %}</span>
+      </div>
+      <div class="game-meta">
+        {% if g.final %}<span class="final">Final</span>{% else %}{{ g.time }}{% endif %}
+        {% if g.line %} · {{ g.line }}{% endif %}{% if g.total %} · O/U {{ g.total }}{% endif %}
+      </div>
+    </header>
+    {% for m in g.matchups %}
+    <a class="mini-matchup" href="{{ base }}/matchup/#off={{ m.off.abbr }}&def={{ m.def.abbr }}">
+      <div class="mini-title">{{ m.off.nick }} offense vs {{ m.def.nick }} defense <span class="go">Full matchup →</span></div>
+      {{ bar(m.off.nick ~ " offense", m.off, m.o, m.oh) }}
+      {{ bar(m.def.nick ~ " D allowed", m.def, m.d, m.dh) }}
+    </a>
+    {% endfor %}
+  </article>
+  {% endfor %}
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

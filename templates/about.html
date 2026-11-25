@@ -10,6 +10,12 @@
     the same situation. Each label reads <b>{{ current }}% ({{ season_range }} avg%)</b>, so you can
     see whether this season matches the longer trend. The five-season average includes {{ current }}.</p>
 
+  <h2>This Week</h2>
+  <p>The home page lists every game in the current week: the earliest week of the season with a game still to
+    play. Each game shows two matchups, the away offense against the home defense and the reverse, as this season's
+    run/pass split with the five-season average in parentheses. "D allowed" is how often opponents ran or passed
+    against that defense. Lines and totals are the latest from nflverse; a line like "LA −2.5" names the favorite.</p>
+
   <h2>Which plays count</h2>
   <p>Regular-season and playoff plays that nflverse classifies as a run or a pass, {{ n_plays }} in all.
     Sacks and scrambles count as passes. Kneel-downs, spikes, special teams and plays wiped out
@@ -36,7 +42,7 @@
 
   <h2>Data</h2>
   <p>Play-by-play from <a href="https://github.com/nflverse/nflverse-data">nflverse</a>, updated
-    daily during the season; team colors from nflverse as well. The site rebuilds every morning.
+    daily during the season; the schedule, lines, scores and team colors come from nflverse as well. The site rebuilds every morning.
     Source code: <a href="https://github.com/ctravasos/nfl-run-pass">github.com/ctravasos/nfl-run-pass</a>.</p>
 </div>
 {% endblock %}

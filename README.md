@@ -17,17 +17,21 @@ offense's tendency next to what opponents do against the defense in the same sit
 
 ## What's on the site
 
+- **This Week** (home page): every game this week, grouped by day, with kickoff time, line and total (or the final score),
+  and run/pass bars for both matchups in each game: the away offense against the home defense, and the reverse. Click
+  one to open the full matchup.
 - **Split Overview**: run/pass splits by down, distance, field position, score differential, quarter and year,
   for the chosen offense and defense.
 - **Custom Filter**: combine any filters (for example 1st down, trailing by 1–6, after the previous drive ended in a
   turnover) and compare this season with any range of the last five seasons. Small samples are flagged.
 
-Matchups are shareable: the URL keeps the selected teams and tab (for example `#off=LV&def=LAC`).
+Matchups are shareable: the URL keeps the selected teams and tab (for example `/matchup/#off=LV&def=LAC`).
 
 ## How it works
 
 - **Data**: [nflverse](https://github.com/nflverse/nflverse-data) play-by-play, regular season and playoffs,
-  run and pass plays only (sacks and scrambles count as passes).
+  run and pass plays only (sacks and scrambles count as passes). The weekly schedule, lines and scores also come from nflverse.
+- **This week**: the earliest week of the current season with a game still to play; once the season ends, its final week.
 - **Drive context**: each drive's outcome (passing TD, rushing TD, field goal made or missed, punt, interception,
   fumble, turnover on downs) is attached to the next drive: the offense's own previous drive, and the
   previous drive against the defense.
@@ -47,7 +51,7 @@ charts, deployed with GitHub Actions to GitHub Pages twice a day.
 | File | What it does |
 |---|---|
 | [`runpass/data.py`](runpass/data.py) | downloads play-by-play, computes drive outcomes and timeout flags, writes one row per run/pass play |
-| [`runpass/build.py`](runpass/build.py) | writes the per-team JSON files and renders `templates/` into `site/` |
+| [`runpass/build.py`](runpass/build.py) | picks this week's games, writes the per-team JSON files and renders `templates/` into `site/` |
 | [`runpass/config.py`](runpass/config.py) | seasons, data URLs, default matchup |
 | [`static/js/app.js`](static/js/app.js) | bins, filters and charts in the browser |
 | [`run.py`](run.py) | CLI: `update`, `build`, `serve` |
